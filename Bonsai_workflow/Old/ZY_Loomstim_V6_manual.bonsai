@@ -595,9 +595,6 @@ def process(value):
                 <gui:RowStyle>
                   <gui:Height>0</gui:Height>
                 </gui:RowStyle>
-                <gui:RowStyle>
-                  <gui:Height>0</gui:Height>
-                </gui:RowStyle>
               </gui:RowStyles>
               <gui:CellSpans />
             </Expression>
