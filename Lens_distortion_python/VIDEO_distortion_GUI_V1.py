@@ -12,11 +12,11 @@ import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog, messagebox
 from scipy.optimize import minimize
-import os, io
+import os
 import time
 import pandas as pd
 import re
-import json, ast
+
 
 # --- Global variable for mouse clicks ---
 points = []
