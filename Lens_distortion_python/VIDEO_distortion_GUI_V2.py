@@ -184,20 +184,37 @@ class VideoCorrectorApp:
         self.status_var.set("Workspace reset for new video.")
 
 
-    def _load_file(self, file_type, label_widget):
-        path = filedialog.askopenfilename(title=f"Select {file_type} file")
-        if path: label_widget.config(text=os.path.basename(path)); self.status_var.set(f"{file_type.capitalize()} file loaded."); return path
-        return ""
+    # def _load_file(self, file_type, label_widget):
+    #     path = filedialog.askopenfilename(title=f"Select {file_type} file",
+    #                                       filetypes=(("CSV Files", "*.csv"), ("All files", "*.*"))
+    #                                       );
+    #     if path: label_widget.config(text=os.path.basename(path)); self.status_var.set(f"{file_type.capitalize()} file loaded."); return path
+    #     return ""
     
     def _load_csv_file(self, file_type, label_widget, required_cols, path=None):
-        if not path: path = self._load_file(file_type, label_widget)
+        if not path: 
+            path = filedialog.askopenfilename(title=f"Select {file_type} file",
+                                          filetypes=(("CSV Files", "*.csv"), ("All files", "*.*"))
+                                          )
         if path:
+            label_widget.config(text=os.path.basename(path))
+            self.status_var.set(f"{file_type.capitalize()} file loaded.");
             try:
                 df = pd.read_csv(path); assert all(col in df.columns for col in required_cols)
                 label_widget.config(text=os.path.basename(path)) # Update label even on auto-find
                 return path, df
             except Exception as e: messagebox.showerror("Error", f"Failed to load or validate {file_type} file:\n{e}"); return "", None
         return "", None
+
+    # def _load_csv_file(self, file_type, label_widget, required_cols, path=None):
+    #     if not path: path = self._load_file(file_type, label_widget)
+    #     if path:
+    #         try:
+    #             df = pd.read_csv(path); assert all(col in df.columns for col in required_cols)
+    #             label_widget.config(text=os.path.basename(path)) # Update label even on auto-find
+    #             return path, df
+    #         except Exception as e: messagebox.showerror("Error", f"Failed to load or validate {file_type} file:\n{e}"); return "", None
+    #     return "", None
     
     def auto_find_files(self):
         if not self.video_path:
