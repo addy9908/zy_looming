@@ -25,7 +25,7 @@ points = []
 
 # --- All the correction logic functions from before remain the same ---
 def click_event(event, x, y, flags, params):
-    global points; frame_for_clicks = params['frame']
+    global points #; frame_for_clicks = params['frame']
     if event == cv2.EVENT_LBUTTONDOWN and len(points) < 8:
         points.append((x, y))
 
@@ -42,6 +42,28 @@ def get_straightness_error(params, src_points, h, w):
     undistorted_pts = cv2.undistortPoints(np.array([src_points], dtype=np.float32), camera_matrix, dist_coeffs, P=camera_matrix).reshape(-1, 8, 2)
     p1, p2, p3, p4, p5, p6, p7, p8 = undistorted_pts[0]
     return sum([distance_to_line(p5, p1, p2), distance_to_line(p6, p2, p3), distance_to_line(p7, p3, p4), distance_to_line(p8, p4, p1)])
+
+def draw_dashed_rectangle(img, top_left, bottom_right, color, thickness=1, dash_length=10):
+    """Draws a dashed rectangle on the given image."""
+    x1, y1 = top_left
+    x2, y2 = bottom_right
+    
+    # Helper to draw a single dashed line
+    def draw_dashed_line(pt1, pt2):
+        dist = np.linalg.norm(np.array(pt1) - np.array(pt2))
+        num_dashes = int(dist / (dash_length * 2))
+        for i in range(num_dashes):
+            start_x = int(pt1[0] + (pt2[0] - pt1[0]) * (i * 2) / (num_dashes * 2))
+            start_y = int(pt1[1] + (pt2[1] - pt1[1]) * (i * 2) / (num_dashes * 2))
+            end_x = int(pt1[0] + (pt2[0] - pt1[0]) * (i * 2 + 1) / (num_dashes * 2))
+            end_y = int(pt1[1] + (pt2[1] - pt1[1]) * (i * 2 + 1) / (num_dashes * 2))
+            cv2.line(img, (start_x, start_y), (end_x, end_y), color, thickness)
+            
+    # Draw the four sides
+    draw_dashed_line((x1, y1), (x2, y1)) # Top
+    draw_dashed_line((x2, y1), (x2, y2)) # Right
+    draw_dashed_line((x2, y2), (x1, y2)) # Bottom
+    draw_dashed_line((x1, y2), (x1, y1)) # Left
 
 class VideoCorrectorApp:
     def __init__(self, root):
@@ -224,6 +246,7 @@ class VideoCorrectorApp:
             self.lbl_video_file.config(text=os.path.basename(path))
             self.video_path = path
             self.btn_auto_find.config(state=tk.NORMAL)
+            self.load_last_parameters_from_log
 
             self.status_var.set("video file loaded.")
             
@@ -339,34 +362,170 @@ class VideoCorrectorApp:
         if final != 'quit': self.correction_params = final; self.process_video(final, start_frame_num)
 
     def process_video(self, params, start_frame_num):
-        k1, cx, cy, M, dims, ncam = params
-        cap = cv2.VideoCapture(self.video_path); w = cap.get(3); h = cap.get(4)
-        cmat = np.array([[w, 0, cx], [0, w, cy], [0, 0, 1]], dtype=np.float32); dist = np.array([k1, 0, 0, 0, 0], dtype=np.float32)
-        out_path = self.generate_output_path(self.video_path); cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_num)
-        writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), cap.get(5), dims)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); processed = 0
+        # We receive output_dims exactly as calculated in fine_tune_and_preview
+        k1_final, cx_final, cy_final, M_final, output_dims, new_cam_matrix_final = params
+        
+        cap_check = cv2.VideoCapture(self.video_path)
+        h, w = cap_check.get(cv2.CAP_PROP_FRAME_HEIGHT), cap_check.get(cv2.CAP_PROP_FRAME_WIDTH)
+        cap_check.release()
+        
+        final_camera_matrix = np.array([[w, 0, cx_final], [0, w, cy_final], [0, 0, 1]], dtype=np.float32)
+        final_dist_coeffs = np.array([k1_final, 0, 0, 0, 0], dtype=np.float32)
+        
+        output_path = self.generate_output_path(self.video_path)
+        self.log_analysis_results(output_path, params)
+        
+        self.status_var.set(f"Processing: {os.path.basename(self.video_path)}")
+        self.root.update()
+        
+        batch_cap = cv2.VideoCapture(self.video_path)
+        batch_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_num)
+        
+        # --- USE THE PASSED OUTPUT DIMS ---
+        # VideoWriter will use the exact dimensions calculated during fine-tuning.
+        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), batch_cap.get(cv2.CAP_PROP_FPS), output_dims)
+        
+        total_frames = int(batch_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        processed_frames = 0
+        
         while True:
-            ret, f = cap.read()
+            ret, f = batch_cap.read()
             if not ret: break
-            writer.write(cv2.warpPerspective(cv2.undistort(f, cmat, dist, None, ncam), M, dims))
-            processed += 1
-            if processed % 30 == 0: self.status_var.set(f"Processing frame {start_frame_num + processed}/{total}"); self.root.update()
-        writer.release(); cap.release(); self.log_analysis_results(out_path, params); messagebox.showinfo("Success", "Saved to " + out_path)
+            
+            # Apply distortion correction
+            lens_corrected = cv2.undistort(f, final_camera_matrix, final_dist_coeffs, None, new_cam_matrix_final)
+            
+            # Apply perspective warp into the final dimensions
+            final_frame = cv2.warpPerspective(lens_corrected, M_final, output_dims)
+            
+            out.write(final_frame)
+            processed_frames += 1
+            
+            # if processed_frames % 30 == 0: 
+            self.status_var.set(f"Processing frame {start_frame_num + processed_frames}/{total_frames}")
+            self.root.update()
+                
+        out.release()
+        batch_cap.release()
+        
+        messagebox.showinfo("Success", f"Video processed successfully!\nSaved to: {output_path}")
+        self.status_var.set("Ready.")
 
-    def log_analysis_results(self, out_path, params):
-        k1, cx, cy, M, dims, ncam = params
-        log = {"Time_analyzed": time.strftime("%Y-%m-%d %H:%M:%S"), "video": os.path.basename(self.video_path), "cam": os.path.basename(self.cam_file_path), "looming": os.path.basename(self.looming_file_path), "lens_k1": f"{k1:.6f}", "M_matrix_flat": ";".join(map(str, M.flatten())), "output_dims": f"{dims[0]},{dims[1]}", "new_cam_matrix_flat": ";".join(map(str, ncam.flatten()))}
-        pd.DataFrame([log]).to_csv(self.log_file_path, mode='a', header=not os.path.exists(self.log_file_path), index=False)
+    # def process_video(self, params, start_frame_num):
+    #     k1, cx, cy, M, dims, ncam = params
+    #     cap = cv2.VideoCapture(self.video_path); w = cap.get(3); h = cap.get(4)
+    #     cmat = np.array([[w, 0, cx], [0, w, cy], [0, 0, 1]], dtype=np.float32); dist = np.array([k1, 0, 0, 0, 0], dtype=np.float32)
+    #     out_path = self.generate_output_path(self.video_path); cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame_num)
+    #     writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), cap.get(5), dims)
+    #     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); processed = 0
+    #     while True:
+    #         ret, f = cap.read()
+    #         if not ret: break
+    #         writer.write(cv2.warpPerspective(cv2.undistort(f, cmat, dist, None, ncam), M, dims))
+    #         processed += 1
+    #         if processed % 30 == 0: self.status_var.set(f"Processing frame {start_frame_num + processed}/{total}"); self.root.update()
+    #     writer.release(); cap.release(); self.log_analysis_results(out_path, params); messagebox.showinfo("Success", "Saved to " + out_path)
+
+    # def log_analysis_results(self, out_path, params):
+    #     k1, cx, cy, M, dims, ncam = params
+    #     log = {"Time_analyzed": time.strftime("%Y-%m-%d %H:%M:%S"), "video": os.path.basename(self.video_path), "cam": os.path.basename(self.cam_file_path), "looming": os.path.basename(self.looming_file_path), "lens_k1": f"{k1:.6f}", "M_matrix_flat": ";".join(map(str, M.flatten())), "output_dims": f"{dims[0]},{dims[1]}", "new_cam_matrix_flat": ";".join(map(str, ncam.flatten()))}
+    #     pd.DataFrame([log]).to_csv(self.log_file_path, mode='a', header=not os.path.exists(self.log_file_path), index=False)
+
+    # def load_last_parameters_from_log(self):
+    #     if not os.path.exists(self.log_file_path): return
+    #     try:
+    #         row = pd.read_csv(self.log_file_path).iloc[-1]
+    #         M = np.array([float(i) for i in row['M_matrix_flat'].split(';')]).reshape(3, 3)
+    #         nc = np.array([float(i) for i in row['new_cam_matrix_flat'].split(';')]).reshape(3, 3)
+    #         self.correction_params = (float(row['lens_k1']), float(row['lens_cx']), float(row['lens_cy']), M, tuple(map(int, row['output_dims'].split(','))), nc)
+    #         self.lbl_params_status.config(text="Ready (from log)", foreground="green")
+    #     except: pass
+    def log_analysis_results(self, output_video_path, params):
+        """
+        Logs the complete analysis details to the central CSV log file.
+        FINAL ROBUST VERSION: Saves matrices as a simple, flat, semicolon-delimited string.
+        Also handles params=None when just trimming without correction.
+        """
+        if params:
+            k1, cx, cy, M, dims, new_cam = params
+            M_flat_str = ";".join(map(str, M.flatten()))
+            new_cam_flat_str = ";".join(map(str, new_cam.flatten()))
+            k1_str, cx_str, cy_str = f"{k1:.6f}", f"{cx:.2f}", f"{cy:.2f}"
+            dims_str = f"{dims[0]},{dims[1]}"
+        else:
+            k1_str, cx_str, cy_str = "NONE", "NONE", "NONE"
+            M_flat_str, new_cam_flat_str = "NONE", "NONE"
+            dims_str = "ORIGINAL"
+
+        log_data = {
+            "Time_analyzed": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "File_path": self.video_path,
+            "video_file_name": os.path.basename(self.video_path),
+            "Cam_file_name": os.path.basename(self.cam_file_path),
+            "looming_file_name": os.path.basename(self.looming_file_path),
+            "looming_on_time_ms": getattr(self, 'looming_on_time', ''),
+            "looming_on_frame": getattr(self, 'looming_on_frame', ''),
+            "pre_event_time_min": self.pre_event_minutes.get(),
+            "pre_event_frame": getattr(self, 'pre_event_frame', ''),
+            "lens_k1": k1_str,
+            "lens_cx": cx_str,
+            "lens_cy": cy_str,
+            "M_matrix_flat": M_flat_str, 
+            "output_dims": dims_str,
+            "new_cam_matrix_flat": new_cam_flat_str 
+        }
+    
+        new_log_df = pd.DataFrame([log_data])
+    
+        if not os.path.exists(self.log_file_path):
+            new_log_df.to_csv(self.log_file_path, index=False)
+        else:
+            new_log_df.to_csv(self.log_file_path, mode='a', header=False, index=False)    
 
     def load_last_parameters_from_log(self):
-        if not os.path.exists(self.log_file_path): return
+        """
+        Loads the last used parameters from the central log file on startup.
+        FINAL ROBUST VERSION: Parses the flat string and reshapes it into a matrix.
+        """
+        if not os.path.exists(self.log_file_path):
+            return
         try:
-            row = pd.read_csv(self.log_file_path).iloc[-1]
-            M = np.array([float(i) for i in row['M_matrix_flat'].split(';')]).reshape(3, 3)
-            nc = np.array([float(i) for i in row['new_cam_matrix_flat'].split(';')]).reshape(3, 3)
-            self.correction_params = (float(row['lens_k1']), float(row['lens_cx']), float(row['lens_cy']), M, tuple(map(int, row['output_dims'].split(','))), nc)
-            self.lbl_params_status.config(text="Ready (from log)", foreground="green")
-        except: pass
+            log_df = pd.read_csv(self.log_file_path)
+            if log_df.empty:
+                return
+                
+            last_row = log_df.iloc[-1]
+            
+            # If the last operation was just a trim, don't load parameters
+            if str(last_row['lens_k1']) == "NONE":
+                return
+
+            k1 = float(last_row['lens_k1'])
+            cx = float(last_row['lens_cx'])
+            cy = float(last_row['lens_cy'])
+            
+            # --- THE DEFINITIVE FIX: Split the flat string, convert to float, and reshape ---
+            M_flat_list = [float(i) for i in last_row['M_matrix_flat'].split(';')]
+            M = np.array(M_flat_list).reshape(3, 3)
+            
+            dims = tuple(map(int, last_row['output_dims'].split(',')))
+            
+            new_cam_flat_list = [float(i) for i in last_row['new_cam_matrix_flat'].split(';')]
+            new_cam = np.array(new_cam_flat_list).reshape(3, 3)
+            
+            # Update the shape check as well
+            if M.shape != (3, 3): raise ValueError(f"M_matrix has incorrect shape after parsing: {M.shape}")
+            if new_cam.shape != (3, 3): raise ValueError(f"new_cam_matrix has incorrect shape after parsing: {new_cam.shape}")
+            
+            self.correction_params = (k1, cx, cy, M, dims, new_cam)
+            
+            self.lbl_params_status.config(text="Correction Parameters: Ready (from log)", foreground="green")
+            self.status_var.set("Loaded last used parameters from log file.")
+        except Exception as e:
+            self.status_var.set(f"Could not load parameters from log: {e}")
+            # Silencing error message slightly since failure to load just means user will recalibrate.
+            # messagebox.showerror("Log File Error", f"Failed to parse the log file '{self.log_file_path}'.\n\nError: {e}\n\nThe log file might be corrupted. You can try deleting it to start fresh.")
+
 
     def get_aspect_ratio_from_dialog(self):
         res = simpledialog.askstring("Aspect Ratio", "Enter ratio (e.g. 1:1)", parent=self.root, initialvalue="1:1")
@@ -375,22 +534,117 @@ class VideoCorrectorApp:
             return float(res)
         except: return 1
 
-    def fine_tune_and_preview(self, frame, init, pts, ratio):
-        h, w = frame.shape[:2]; win = "Fine-Tune | A=Apply | R=Reset | Q=Quit"; cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-        cv2.createTrackbar("Correction", win, int(init[0]*10000+4000), 8000, lambda x:None); cv2.createTrackbar("CX", win, int(init[1]), w, lambda x:None); cv2.createTrackbar("CY", win, int(init[2]), h, lambda x:None)
-        last = ()
+
+
+    def fine_tune_and_preview(self, frame, initial_params, original_corner_points, aspect_ratio):
+        h, w = frame.shape[:2]
+        window_name = "Fine-Tune | A=Apply | R=Reset | Q=Quit"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+
+        k1_auto, cx_auto, cy_auto = initial_params
+        initial_k1_slider_pos = int((k1_auto * 5000) + 10000)
+        initial_cx_slider_pos = int(cx_auto)
+        initial_cy_slider_pos = int(cy_auto)
+
+        cv2.createTrackbar("Correction", window_name, initial_k1_slider_pos, 20000, lambda x:None)
+        cv2.createTrackbar("Center X", window_name, initial_cx_slider_pos, w, lambda x: None)
+        cv2.createTrackbar("Center Y", window_name, initial_cy_slider_pos, h, lambda x: None)
+        
+        pt_TR = original_corner_points[0][1] 
+        pt_BR = original_corner_points[0][2] 
+        
+        # 1. Height based on vertical difference in Y between TR and BR
+        target_h = abs(pt_BR[1] - pt_TR[1])
+        target_w = target_h * aspect_ratio
+        
+        # --- NEW MARGIN LOGIC ---
+        y_margin = pt_TR[1]          # Original Top margin
+        x_margin = y_margin * 4.0    # Making X-Offset LARGER (4x the Y margin)
+        
+        # 2. Set output dims with the new independent margins
+        out_w = int(target_w + x_margin * 2)
+        out_h = int(target_h + y_margin * 2)
+        output_dims = (out_w, out_h)
+        
+        # 3. Lock destination points using the specific X and Y margins
+        dst_points = np.array([
+            [x_margin, y_margin],                       # Top-Left
+            [x_margin + target_w, y_margin],            # Top-Right
+            [x_margin + target_w, y_margin + target_h], # Bottom-Right
+            [x_margin, y_margin + target_h]             # Bottom-Left
+        ], dtype="float32")
+        
+        last_params = ()
         while True:
-            p = (cv2.getTrackbarPos("Correction", win), cv2.getTrackbarPos("CX", win), cv2.getTrackbarPos("CY", win))
-            if p != last:
-                k1 = (p[0]-4000)/10000.0; cm = np.array([[w,0,p[1]], [0,w,p[2]], [0,0,1]], dtype=np.float32); dist = np.array([k1,0,0,0,0], dtype=np.float32)
-                nc, _ = cv2.getOptimalNewCameraMatrix(cm, dist, (w,h), 1, (w,h))
-                und = cv2.undistort(frame, cm, dist, None, nc); c_pts = cv2.undistortPoints(pts, cm, dist, P=nc).reshape(-1, 2)
-                f_w = h; f_h = int(f_w/ratio); M = cv2.getPerspectiveTransform(c_pts, np.array([[0,0],[f_w-1,0],[f_w-1,f_h-1],[0,f_h-1]], dtype="float32"))
-                cv2.imshow(win, cv2.warpPerspective(und, M, (f_w, f_h))); last = p
+            k1_pos = cv2.getTrackbarPos("Correction", window_name)
+            cx_pos = cv2.getTrackbarPos("Center X", window_name)
+            cy_pos = cv2.getTrackbarPos("Center Y", window_name)
+            
+            if (k1_pos, cx_pos, cy_pos) != last_params:
+                k1_fine = (k1_pos - 10000) / 5000.0
+                temp_cam_matrix = np.array([[w, 0, cx_pos], [0, w, cy_pos], [0,0,1]], dtype=np.float32)
+                temp_dist_coeffs = np.array([k1_fine, 0, 0, 0, 0], dtype=np.float32)
+                
+                new_cam_matrix, _ = cv2.getOptimalNewCameraMatrix(temp_cam_matrix, temp_dist_coeffs, (w,h), 1, (w,h))
+                lens_corrected_frame = cv2.undistort(frame, temp_cam_matrix, temp_dist_coeffs, None, new_cam_matrix)
+                corrected_corners = cv2.undistortPoints(original_corner_points, temp_cam_matrix, temp_dist_coeffs, P=new_cam_matrix).reshape(-1, 2)
+                
+                M = cv2.getPerspectiveTransform(corrected_corners, dst_points)
+                preview_frame = cv2.warpPerspective(lens_corrected_frame, M, output_dims)
+                
+                # --- Drawing the guide with the new offsets ---
+                preview_with_guide = preview_frame.copy()
+                start_pt = (int(x_margin), int(y_margin))
+                end_pt = (int(x_margin + target_w), int(y_margin + target_h))
+                draw_dashed_rectangle(preview_with_guide, start_pt, end_pt, (0, 0, 255), thickness=2, dash_length=15)
+                
+                # Minimum width check for sliders
+                min_ui_width = 1000
+                if preview_with_guide.shape[1] < min_ui_width:
+                    pad = (min_ui_width - preview_with_guide.shape[1]) // 2
+                    final_display = cv2.copyMakeBorder(preview_with_guide, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=(0,0,0))
+                else:
+                    final_display = preview_with_guide
+
+                cv2.imshow(window_name, final_display)
+                last_params = (k1_pos, cx_pos, cy_pos)
+
             key = cv2.waitKey(20) & 0xFF
-            if key in [ord('q'), 27]: return 'quit'
-            if key == ord('a'): return (k1, p[1], p[2], M, (f_w, f_h), nc)
-            if key == ord('r'): cv2.setTrackbarPos("Correction", win, int(init[0]*10000+4000)); cv2.setTrackbarPos("CX", win, int(init[1])); cv2.setTrackbarPos("CY", win, int(init[2]))
+            if key == ord('q') or key == 27: return 'quit'
+            if key == ord('a'): return (k1_fine, cx_pos, cy_pos, M, output_dims, new_cam_matrix)
+            if key == ord('r'):
+                cv2.setTrackbarPos("Correction", window_name, initial_k1_slider_pos)
+                cv2.setTrackbarPos("Center X", window_name, initial_cx_slider_pos)
+                cv2.setTrackbarPos("Center Y", window_name, initial_cy_slider_pos)
+
+    # def fine_tune_and_preview(self, frame, initial_params, original_corner_points, aspect_ratio):
+    #     h, w = frame.shape[:2]; window_name = "Fine-Tune | A=Apply | R=Reset | Q=Quit"; cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    #     k1_auto, cx_auto, cy_auto = initial_params
+    #     initial_k1_slider_pos, initial_cx_slider_pos, initial_cy_slider_pos = int((k1_auto * 10000) + 4000), int(cx_auto), int(cy_auto)
+    #     cv2.createTrackbar("Correction", window_name, initial_k1_slider_pos, 8000, lambda x:None); cv2.createTrackbar("Center X", window_name, initial_cx_slider_pos, w, lambda x: None); cv2.createTrackbar("Center Y", window_name, initial_cy_slider_pos, h, lambda x: None)
+    #     last_params = ()
+    #     while True:
+    #         k1_pos, cx_pos, cy_pos = cv2.getTrackbarPos("Correction", window_name), cv2.getTrackbarPos("Center X", window_name), cv2.getTrackbarPos("Center Y", window_name)
+    #         if (k1_pos, cx_pos, cy_pos) != last_params:
+    #             k1_fine = (k1_pos - 4000) / 10000.0
+    #             temp_cam_matrix = np.array([[w, 0, cx_pos], [0, w, cy_pos], [0,0,1]], dtype=np.float32)
+    #             temp_dist_coeffs = np.array([k1_fine, 0, 0, 0, 0], dtype=np.float32)
+    #             new_cam_matrix, _ = cv2.getOptimalNewCameraMatrix(temp_cam_matrix, temp_dist_coeffs, (w,h), 1, (w,h))
+    #             lens_corrected_frame = cv2.undistort(frame, temp_cam_matrix, temp_dist_coeffs, None, new_cam_matrix)
+    #             corrected_corners = cv2.undistortPoints(original_corner_points, temp_cam_matrix, temp_dist_coeffs, P=new_cam_matrix).reshape(-1, 2)
+                
+    #             max_width = h # Set the output width to the original video's height
+    #             max_height = int(max_width / aspect_ratio)
+                
+    #             dst_points = np.array([[0,0], [max_width-1,0], [max_width-1,max_height-1], [0,max_height-1]], dtype="float32")
+    #             M = cv2.getPerspectiveTransform(corrected_corners, dst_points)
+    #             preview_frame = cv2.warpPerspective(lens_corrected_frame, M, (max_width, max_height))
+    #             cv2.imshow(window_name, preview_frame); last_params = (k1_pos, cx_pos, cy_pos)
+    #         key = cv2.waitKey(20) & 0xFF
+    #         if key == ord('q') or key == 27: return 'quit'
+    #         if key == ord('a'): return (k1_fine, cx_pos, cy_pos, M, (max_width, max_height), new_cam_matrix)
+    #         if key == ord('r'):
+    #             cv2.setTrackbarPos("Correction", window_name, initial_k1_slider_pos); cv2.setTrackbarPos("Center X", window_name, initial_cx_slider_pos); cv2.setTrackbarPos("Center Y", window_name, initial_cy_slider_pos)
 
     def generate_output_path(self, path):
         out_dir = os.path.join(os.path.dirname(path), "output"); os.makedirs(out_dir, exist_ok=True)
@@ -498,8 +752,8 @@ class VideoCorrectorApp:
                 closest_pre_row = c_df.loc[(c_df['Millis'] - target_millis).abs().idxmin()]
                 start_frame = int(closest_pre_row['Cam_Frame'])
                 target_frames = int(c_df['Cam_Frame'].max())
-            except Exception as e:
-                self.batch_tree.item(item_id, values=(no, vid_path, cam_path, loom_path, f"Error: CSV parse"))
+            except:
+                self.batch_tree.item(item_id, values=(no, vid_path, cam_path, loom_path, "Error: CSV parse"))
                 continue
 
             # 2. Wait for Cloud Download

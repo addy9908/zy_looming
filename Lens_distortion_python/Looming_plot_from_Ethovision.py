@@ -91,10 +91,10 @@ class EthoVisionAnalyzer(QMainWindow):
         self.txt_pre_stim = QLineEdit("-5")
         self.txt_stim_name = QLineEdit("Looming-On")
         self.txt_rolling_avg = QLineEdit("1")
-        self.txt_chamber_w = QLineEdit("40") 
-        self.txt_chamber_h = QLineEdit("40")
-        self.txt_shelter_x = QLineEdit("15")
-        self.txt_shelter_y = QLineEdit("15")
+        self.txt_chamber_w = QLineEdit("30.48") 
+        self.txt_chamber_h = QLineEdit("50.8")
+        self.txt_shelter_x = QLineEdit("30.48")
+        self.txt_shelter_y = QLineEdit("10.16")
         
         for txt in [self.txt_stim_start, self.txt_pre_stim, self.txt_rolling_avg, 
                     self.txt_chamber_w, self.txt_chamber_h, self.txt_shelter_x, self.txt_shelter_y]:
@@ -129,7 +129,7 @@ class EthoVisionAnalyzer(QMainWindow):
         self.trace_ax = self.trace_fig.add_subplot(111)
         self.trace_fig.tight_layout(pad=0.5)
         self.trace_canvas = FigureCanvas(self.trace_fig)
-        self.trace_canvas.setMinimumHeight(280)
+        self.trace_canvas.setMinimumHeight(400)
         self.trace_canvas.mpl_connect('button_press_event', self.on_trace_click)
         left_layout.addWidget(self.trace_canvas)
         
@@ -479,6 +479,8 @@ class EthoVisionAnalyzer(QMainWindow):
         self.ax.plot(vis_df['Rel_Time'], vis_df[vel_col], color='#1976d2', label='Velocity')
         self.ax.axvline(0, color='black', linestyle='--', label=self.txt_stim_name.text())
         self.ax.set_xlim(pre, post)
+        self.ax.set_ylabel("Velocity (cm/s)", fontweight='bold')
+        self.ax.set_xlabel("Time (s)", fontweight='bold')
         
         f_dur = "--"
         dist_v = "N/A"
@@ -551,7 +553,9 @@ class EthoVisionAnalyzer(QMainWindow):
                 self.trace_ax.set_xlim(cx-w/2, xm)
                 self.trace_ax.set_ylim(ym, cy+h/2)
                 
-                self.trace_ax.add_patch(Polygon([[xm, ym], [xm-sx, ym], [xm, ym+sy]], closed=True, facecolor='green', alpha=0.3))
+                # self.trace_ax.add_patch(Polygon([[xm, ym], [xm-sx, ym], [xm, ym+sy]], closed=True, facecolor='green', alpha=0.3))
+                #rectangle
+                self.trace_ax.add_patch(Polygon([[xm-sx,ym], [xm, ym], [xm, ym+sy], [xm-sx, ym+sy]], closed=True, facecolor='green', alpha=0.3))
             except: pass
             
         self.trace_ax.set_aspect('equal')
