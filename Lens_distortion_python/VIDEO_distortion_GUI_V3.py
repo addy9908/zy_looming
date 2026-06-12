@@ -168,13 +168,13 @@ class VideoCorrectorApp:
         # --- Top Tools ---
         tools_frame = ttk.Frame(batch_frame)
         tools_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(tools_frame, text="Load Videos", command=self.batch_load_videos).pack(side=tk.LEFT, padx=5)
-        ttk.Button(tools_frame, text="Auto-Map CSVs", command=self.batch_auto_map).pack(side=tk.LEFT, padx=5)
-        ttk.Button(tools_frame, text="Save Mapping CSV", command=self.batch_save_mapping).pack(side=tk.LEFT, padx=5)
-        ttk.Button(tools_frame, text="Load Mapping CSV", command=self.batch_load_mapping).pack(side=tk.LEFT, padx=5)
+        ttk.Button(tools_frame, text="1. Load Videos", command=self.batch_load_videos).pack(side=tk.LEFT, padx=10)
+        ttk.Button(tools_frame, text="2. Auto-Map CSVs", command=self.batch_auto_map).pack(side=tk.LEFT, padx=10)
+        ttk.Button(tools_frame, text="Save Mapping CSV", command=self.batch_save_mapping).pack(side=tk.RIGHT, padx=10)
+        ttk.Button(tools_frame, text="Load Mapping CSV", command=self.batch_load_mapping).pack(side=tk.RIGHT, padx=10)
         
-        ttk.Button(tools_frame, text="Clear List", command=self.batch_clear_list).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(tools_frame, text="Select All", command=self.batch_select_all).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(tools_frame, text="Clear List", command=self.batch_clear_list).pack(side=tk.RIGHT, padx=10)
+        ttk.Button(tools_frame, text="Select All", command=self.batch_select_all).pack(side=tk.RIGHT, padx=10)
 
         # --- Table ---
         self.batch_tree = ttk.Treeview(batch_frame, columns=("No", "Video", "Cam", "Looming", "Status"), show='headings')
@@ -202,11 +202,11 @@ class VideoCorrectorApp:
         ttk.Button(run_frame, text="Set Cam for Selected", command=lambda: self.batch_set_file("Cam")).pack(side=tk.LEFT, padx=5)
         ttk.Button(run_frame, text="Set Looming for Selected", command=lambda: self.batch_set_file("Looming")).pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(run_frame, text="Pre-event Time (min):").pack(side=tk.LEFT, padx=(30, 5))
+        ttk.Label(run_frame, text="3. Pre-event Time (min):").pack(side=tk.LEFT, padx=(30, 5))
         self.batch_pre_event = tk.StringVar(value="1")
         ttk.Entry(run_frame, textvariable=self.batch_pre_event, width=5).pack(side=tk.LEFT, padx=5)
         
-        ttk.Button(run_frame, text="Start Batch Trim & Save", command=self.run_batch_trim).pack(side=tk.RIGHT, padx=5, ipady=5)
+        ttk.Button(run_frame, text="4. Start Batch Trim & Save", command=self.run_batch_trim).pack(side=tk.RIGHT, padx=5, ipady=5)
 
     # --- Helper: Closest After Logic ---
     def get_closest_after_file(self, video_path, prefix):
@@ -780,10 +780,10 @@ class VideoCorrectorApp:
                 if not ret: break
                 writer.write(f)
                 processed += 1
-                if processed % 30 == 0:
-                    self.status_var.set(f"Batch {idx+1}/{total_videos}: Trimming frame {start_frame + processed}/{actual_frames}")
-                    self.root.update()
-            
+                # if processed % 30 == 0:
+                self.status_var.set(f"Batch {idx+1}/{total_videos}: Trimming frame {start_frame + processed}/{actual_frames}")
+                self.root.update()
+        
             writer.release(); cap.release()
             self.batch_tree.item(item_id, values=(no, vid_path, cam_path, loom_path, "Done"))
             completed += 1
