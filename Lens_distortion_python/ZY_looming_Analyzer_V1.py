@@ -585,8 +585,11 @@ class LoomingAnalyzer(QMainWindow):
             # --- NEW: APPLY CALIBRATION Y-OFFSET ---
             try: y_offset = float(self.txt_calib_y_offset.text())
             except: y_offset = 10.0
+            try: x_offset = float(self.txt_x_offset.text())
+            except: x_offset = 0
             
             df['Y_cm'] = df['Y_cm'] + y_offset 
+            df['X_cm'] = df['X_cm'] + x_offset 
             
         else:
             # --- SIMPLE PIXEL-TO-CM FALLBACK MAP ---
