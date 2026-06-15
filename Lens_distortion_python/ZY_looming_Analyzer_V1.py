@@ -358,7 +358,8 @@ class LoomingAnalyzer(QMainWindow):
             btn = QPushButton(btn_text)
             lbl = QLabel("--")
             btn.clicked.connect(lambda: self.set_annotation(key))
-            row.addWidget(btn); row.addWidget(lbl)
+            row.addWidget(btn)
+            row.addWidget(lbl)
             return row, lbl
             
         r1, self.lbl_freeze_start = make_ann_row("1. Set Freezing Start", "freeze_start")
