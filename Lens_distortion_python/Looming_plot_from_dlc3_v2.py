@@ -1,3 +1,11 @@
+"""
+Created on Fri Apr 17 16:57:59 2026
+1. plot velocity vs time from raw Ethovision output files (Excel) or dlc files (.h5)
+2. calculate and mask the back to shelter time, freezing time
+3. save the results, raw plot data, and plots
+@author: Zengyou Ye (addy9908@gmail.com)
+"""
+
 import sys
 import os
 import datetime
@@ -11,7 +19,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QFileDialog, QTableView, QLabel, QLineEdit, 
+                             QPushButton, QFileDialog, QTableView, QLabel, QLineEdit, QCheckBox,
                              QFormLayout, QComboBox, QSplitter, QMessageBox, QAbstractItemView, QGroupBox)
 from PyQt5.QtCore import Qt, QAbstractTableModel
 from PyQt5.QtGui import QColor, QBrush, QStandardItemModel, QStandardItem
@@ -172,21 +180,27 @@ class LoomingAnalyzer(QMainWindow):
         self.txt_chamber_w = QLineEdit("30.5")
         self.txt_chamber_h = QLineEdit("51.0")
         self.txt_shelter_h = QLineEdit("10.0") # Shelter is always bottom-anchored, width=chamber_w
+        self.txt_x_offset = QLineEdit("0.0") 
         self.txt_calib_y_offset = QLineEdit("10.0")
         
         self.txt_stim_start = QLineEdit("60.0")
         self.txt_pre_stim = QLineEdit("-5.0")
         self.txt_rolling_avg = QLineEdit("3")
+        self.txt_freeze_thresh = QLineEdit("12")
         
         param_form.addRow("Chamber W (cm):", self.txt_chamber_w)
         param_form.addRow("Chamber H (cm):", self.txt_chamber_h)
         param_form.addRow("Shelter Height (cm):", self.txt_shelter_h)
+        param_form.addRow("Manual X-Offset (cm):", self.txt_x_offset) 
         param_form.addRow("Calib Y-Offset (cm):", self.txt_calib_y_offset)
         param_form.addRow("Looming Start (s):", self.txt_stim_start)
         param_form.addRow("Plot Pre-Range (s):", self.txt_pre_stim)
         param_form.addRow("Velocity Smoothing:", self.txt_rolling_avg)
+        param_form.addRow("Freeze Thresh (cm/s):", self.txt_freeze_thresh)
         
-        for txt in [self.txt_chamber_w, self.txt_chamber_h, self.txt_shelter_h, self.txt_calib_y_offset, self.txt_stim_start, self.txt_pre_stim, self.txt_rolling_avg]:
+        for txt in [self.txt_chamber_w, self.txt_chamber_h, self.txt_shelter_h, 
+                    self.txt_x_offset, self.txt_calib_y_offset, self.txt_freeze_thresh,
+                    self.txt_stim_start, self.txt_pre_stim, self.txt_rolling_avg]:
             txt.editingFinished.connect(self.recalculate_data)
             
         grp_params.setLayout(param_form)
@@ -332,6 +346,12 @@ class LoomingAnalyzer(QMainWindow):
         self.lbl_selected_point.setStyleSheet("font-weight: bold; color: #1565c0; font-size: 16px; margin: 10px 0px;")
         ann_col.addWidget(self.lbl_selected_point)
         
+        # --- NEW: Master Auto-Detect Button ---
+        self.btn_auto_detect = QPushButton("🤖 Auto-Detect (Freeze & Shelter)")
+        self.btn_auto_detect.setStyleSheet("background-color: #e8f5e9; color: #2e7d32; font-weight: bold; padding: 6px;")
+        self.btn_auto_detect.clicked.connect(self.auto_detect_behaviors)
+        ann_col.addWidget(self.btn_auto_detect)
+        
         # Annotator Buttons
         def make_ann_row(btn_text, key):
             row = QHBoxLayout()
@@ -357,6 +377,11 @@ class LoomingAnalyzer(QMainWindow):
         top_right_layout.addLayout(ann_plot_lay)
         
         # Table
+        self.chk_clean_view = QCheckBox("Clean Table View (Hide raw coords & metadata)")
+        self.chk_clean_view.setChecked(True) # On by default!
+        self.chk_clean_view.stateChanged.connect(self.update_table_view)
+        top_right_layout.addWidget(self.chk_clean_view)
+        
         self.table_view = QTableView()
         self.table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_view.clicked.connect(self.on_table_clicked)
@@ -438,9 +463,9 @@ class LoomingAnalyzer(QMainWindow):
             self.lbl_selected_point.setText("Selected Time: -- s")
             
             d = self.file_data[filepath]
-            self.txt_mouse_id.setText(d['mouse_id'])
-            self.txt_photostim.setText(d['photostim'])
-            self.txt_post_stim.setText(str(d['post_stim']))
+            # self.txt_mouse_id.setText(d['mouse_id'])
+            # self.txt_photostim.setText(d['photostim'])
+            # self.txt_post_stim.setText(str(d['post_stim']))
             self.txt_stim_start.setText(str(d.get('stim_start', 60.0)))
             
             # Route to parser
@@ -474,6 +499,10 @@ class LoomingAnalyzer(QMainWindow):
                     d['shelter_time'] = float(df.loc[st_mask, 'Rel_Time'].iloc[0]) if st_mask.any() else None
                           
             self.raw_data = df
+            self.txt_mouse_id.setText(d['mouse_id'])
+            self.txt_photostim.setText(d['photostim'])
+            self.txt_post_stim.setText(str(d['post_stim']))
+
             self.recalculate_data()
             
         except Exception as e:
@@ -569,8 +598,8 @@ class LoomingAnalyzer(QMainWindow):
             
         # 3. Calculate Speed & Distance Metrics
         dist = np.sqrt(df['X_cm'].diff()**2 + df['Y_cm'].diff()**2).fillna(0.0)
-        df['Distance'] = dist
-        df['Raw_Velocity'] = dist * fps
+        df['Distance_cm'] = dist
+        df['Raw_Velocity_cm_s'] = dist * fps
         
         # 4. Zone Readout
         try: shelter_h = float(self.txt_shelter_h.text())
@@ -583,11 +612,34 @@ class LoomingAnalyzer(QMainWindow):
     # ==========================================
     # UPDATED: PARSE ETHOVISION (.xlsx/.txt)
     # ==========================================
+    # def _read_meta(self, filepath):
+    #     try:
+    #         temp_df = pd.read_excel(filepath, nrows=50, header=None)
+    #         header_row_idx = temp_df[temp_df.eq("Trial time").any(axis=1)].index[0]
+    #         meta_df = temp_df.iloc[:header_row_idx]
+    #         m_id, p_stim = "N/A", "N/A"
+    #         for _, row in meta_df.iterrows():
+    #             if pd.notna(row[0]) and pd.notna(row[1]):
+    #                 k, v = str(row[0]).lower(), str(row[1])
+    #                 if "mouse" in k: m_id = v
+    #                 elif "stim" in k: p_stim = v
+    #         return str(m_id).strip(), str(p_stim).strip()
+    #     except: return "N/A", "N/A"
+    
     def parse_ethovision(self, filepath, meta):
-        """Parses Ethovision tracking files."""
+        """Parses Ethovision files and auto-normalizes them to a (0,0) bottom-left origin."""
         if filepath.endswith('.xlsx'):
             temp_df = pd.read_excel(filepath, nrows=50, header=None)
             idx_row = temp_df[temp_df.eq("Trial time").any(axis=1)].index[0]
+            meta_df = temp_df.iloc[:idx_row]
+            m_id, p_stim = "N/A", "N/A"
+            for _, row in meta_df.iterrows():
+                if pd.notna(row[0]) and pd.notna(row[1]):
+                    k, v = str(row[0]).lower(), str(row[1])
+                    if "mouse" in k: m_id = v
+                    elif "stim" in k: p_stim = v
+            self.file_data[filepath]['mouse_id'] = str(m_id).strip()
+            self.file_data[filepath]['photostim'] = str(p_stim).strip()
             df = pd.read_excel(filepath, skiprows=idx_row)
         else:
             df = pd.read_csv(filepath)
@@ -598,26 +650,58 @@ class LoomingAnalyzer(QMainWindow):
         xc = next((c for c in df.columns if 'x center' in c.lower()), None)
         yc = next((c for c in df.columns if 'y center' in c.lower()), None)
         
-        # Build raw vs clean fields
         if xc and yc:
             df['X_raw'] = pd.to_numeric(df[xc], errors='coerce')
             df['Y_raw'] = pd.to_numeric(df[yc], errors='coerce')
             
-            # Forward-fill any missing/lost tracking coordinates in CM
-            df['X_cm'] = df['X_raw'].ffill()
-            df['Y_cm'] = df['Y_raw'].ffill()
+            # Forward-fill any missing/lost tracking coordinates
+            x_filled = df['X_raw'].ffill().bfill()
+            y_filled = df['Y_raw'].ffill().bfill()
             
+            # --- SMART NORMALIZATION ---
+            # # Find the empirical center of the mouse's exploration path
+            # cx = (x_filled.max() + x_filled.min()) / 2.0
+            # cy = (y_filled.max() + y_filled.min()) / 2.0
+            
+            # try: chamber_w = float(self.txt_chamber_w.text())
+            # except: chamber_w = 30.5
+            # try: chamber_h = float(self.txt_chamber_h.text())
+            # except: chamber_h = 51.0
+            try: chamber_w = float(self.txt_chamber_w.text())
+            except: chamber_w = 30.5
+            try: chamber_h = float(self.txt_chamber_h.text())
+            except: chamber_h = 51.0
+            
+            # --- TRUE MATHEMATICAL NORMALIZATION ---
+            try: x_off = float(self.txt_x_offset.text())
+            except: x_off = 0.0
+            try: self.txt_calib_y_offset.setText('0'); y_off = float(self.txt_calib_y_offset.text())
+            except: y_off = 0.0
+            
+            # Assuming EthoVision origin (0,0) is roughly the center of the arena
+            df['X_cm'] = x_filled + (chamber_w / 2.0) + x_off
+            df['Y_cm'] = y_filled + (chamber_h / 2.0) + y_off
+            
+            # Shelter Logic (Now completely synchronized with DLC!)
             try: shelter_h = float(self.txt_shelter_h.text())
             except: shelter_h = 10.0
             df['In zone'] = (df['Y_cm'] <= shelter_h).astype(int)
             
-        if 'Velocity' in df.columns:
-            df['Raw_Velocity'] = pd.to_numeric(df['Velocity'], errors='coerce').fillna(0.0)
+            # 2. FIX: Calculate uniform Distance and Velocity from pure coordinates!
+            dist = np.sqrt(df['X_cm'].diff()**2 + df['Y_cm'].diff()**2).fillna(0.0)
+            df['Distance_cm'] = dist
             
-        if 'Distance moved' in df.columns:
-            df['Distance'] = pd.to_numeric(df['Distance moved'], errors='coerce').fillna(0.0)
+            # Dynamically calculate FPS from the Trial time timestamps
+            try: 
+                fps = 1.0 / df['Trial time'].diff().median()
+            except: 
+                try: fps = float(self.txt_fps.text())
+                except: fps = 30.0
+                
+            df['Raw_Velocity_cm_s'] = dist * fps
             
         return df
+
 
     def apply_mouse_id_index(self):
         """Mass-updates the Mouse_ID for all files based on the requested filename index."""
@@ -666,9 +750,32 @@ class LoomingAnalyzer(QMainWindow):
         
         # --- THE FIX: If the scale/fps inputs changed on a DLC file, re-trigger the parsing math! ---
         if d['type'] == 'dlc':
-            dlc_parameters = [self.txt_px_cm, self.txt_fps, self.txt_likelihood, self.txt_vid_h, self.txt_vid_w, self.combo_bp.model(), self.txt_calib_y_offset]
+            dlc_parameters = [self.txt_px_cm, self.txt_fps, self.txt_likelihood, self.txt_vid_h, self.txt_vid_w, self.combo_bp.model(), self.txt_x_offset, self.txt_calib_y_offset]
             if self.sender() in dlc_parameters:
                 self.raw_data = self.parse_dlc(path, d)
+        elif d['type'] == 'ethovision':
+            etho_parameters = [self.txt_chamber_w, self.txt_chamber_h, 
+                               self.txt_x_offset, self.txt_calib_y_offset, 
+                               self.txt_shelter_h]
+            if self.sender() in etho_parameters:
+                # IN-MEMORY UPDATE: Lightning fast, no hard drive reading required!
+                try: cw = float(self.txt_chamber_w.text())
+                except: cw = 30.5
+                try: ch = float(self.txt_chamber_h.text())
+                except: ch = 51.0
+                try: x_off = float(self.txt_x_offset.text())
+                except: x_off = 0.0
+                try: y_off = float(self.txt_calib_y_offset.text())
+                except: y_off = 0.0
+                try: sh = float(self.txt_shelter_h.text())
+                except: sh = 10.0
+
+                x_filled = self.raw_data['X_raw'].ffill().bfill()
+                y_filled = self.raw_data['Y_raw'].ffill().bfill()
+
+                self.raw_data['X_cm'] = x_filled + (cw / 2.0) + x_off
+                self.raw_data['Y_cm'] = y_filled + (ch / 2.0) + y_off
+                self.raw_data['In zone'] = (self.raw_data['Y_cm'] <= sh).astype(int)                
         
         try:
             window = int(self.txt_rolling_avg.text()) if self.txt_rolling_avg.text().isdigit() else 1
@@ -676,16 +783,15 @@ class LoomingAnalyzer(QMainWindow):
             self.raw_data['Trial time'] = pd.to_numeric(self.raw_data['Trial time'], errors='coerce')
             self.raw_data['Rel_Time'] = self.raw_data['Trial time'] - start
             
-            if 'Raw_Velocity' in self.raw_data.columns:
+            if 'Raw_Velocity_cm_s' in self.raw_data.columns:
                 if window > 1:
-                    self.raw_data['Velocity'] = self.raw_data['Raw_Velocity'].rolling(window=window, center=True, min_periods=1).mean()
+                    self.raw_data['Velocity_cm_s'] = self.raw_data['Raw_Velocity_cm_s'].rolling(window=window, center=True, min_periods=1).mean()
                 else:
-                    self.raw_data['Velocity'] = self.raw_data['Raw_Velocity']
+                    self.raw_data['Velocity_cm_s'] = self.raw_data['Raw_Velocity_cm_s']
                     
             # Strip helper raw column out of final visual table layout
-            display_df = self.raw_data.drop(columns=['Raw_Velocity'], errors='ignore')
-            self.table_view.setModel(PandasModel(display_df))
             self.update_plots()
+            self.update_table_view() 
         except Exception as e:
             print("Recalculate Error:", e)
 
@@ -752,7 +858,7 @@ class LoomingAnalyzer(QMainWindow):
             except: pass
             
         rel_t = self.raw_data.at[idx, 'Rel_Time']
-        y_vel = self.raw_data.at[idx, 'Velocity'] if 'Velocity' in self.raw_data.columns else 0
+        y_vel = self.raw_data.at[idx, 'Velocity_cm_s'] if 'Velocity_cm_s' in self.raw_data.columns else 0
         self.vel_marker, = self.ax.plot(rel_t, y_vel, marker='o', color='black', markersize=8, zorder=10)
         self.canvas.draw_idle()
         
@@ -768,6 +874,59 @@ class LoomingAnalyzer(QMainWindow):
                 self.trace_marker, = self.trace_ax.plot(x_val, y_val, marker='o', color='black', markeredgecolor='white', markersize=8, zorder=10)
                 self.trace_canvas.draw_idle()
 
+    def auto_detect_behaviors(self):
+        """Automatically finds Freezing Start, Freezing End, and Shelter Entry after the stimulus."""
+        path = self.get_current_filepath()
+        if not path or self.raw_data is None: 
+            return
+            
+        df = self.raw_data
+        post_stim_df = df[df['Rel_Time'] >= 0]
+        if post_stim_df.empty: return
+        
+        # 1. AUTO-DETECT SHELTER
+        zone_df = post_stim_df[post_stim_df['In zone'] == 1]
+        if not zone_df.empty:
+            self.file_data[path]['shelter_time'] = zone_df['Rel_Time'].iloc[0]
+        else:
+            self.file_data[path]['shelter_time'] = None
+
+        # 2. AUTO-DETECT FREEZING
+        try: thresh = float(self.txt_freeze_thresh.text())
+        except: thresh = 1.0
+        
+        vel_col = 'Velocity_cm_s' if 'Velocity_cm_s' in df.columns else 'Velocity'
+        
+        # Find first frame below threshold
+        freeze_start_df = post_stim_df[post_stim_df[vel_col] <= thresh]
+        
+        if not freeze_start_df.empty:
+            f_start = freeze_start_df['Rel_Time'].iloc[0]
+            self.file_data[path]['freeze_start'] = f_start
+            
+            # Find first frame ABOVE threshold AFTER the freeze started
+            freeze_end_df = df[(df['Rel_Time'] > f_start) & (df[vel_col] > thresh)]
+            if not freeze_end_df.empty:
+                # If they reach the shelter BEFORE they stop freezing (e.g. drifting slowly into it)
+                # Cap the freeze end at the shelter time to make logical sense.
+                f_end = freeze_end_df['Rel_Time'].iloc[0]
+                st = self.file_data[path]['shelter_time']
+                
+                if st is not None and f_end > st:
+                    self.file_data[path]['freeze_end'] = st
+                else:
+                    self.file_data[path]['freeze_end'] = f_end
+            else:
+                self.file_data[path]['freeze_end'] = None
+        else:
+            self.file_data[path]['freeze_start'] = None
+            self.file_data[path]['freeze_end'] = None
+
+        # Instantly redraw the plots to show the new automated ranges!
+        self.update_plots()
+        self.update_table_view()
+        self.statusBar().showMessage("Auto-Detection Complete!", 3000)
+
     def set_annotation(self, key):
         """Assigns the currently selected time to a behavior state."""
         path = self.get_current_filepath()
@@ -775,6 +934,49 @@ class LoomingAnalyzer(QMainWindow):
             t = self.raw_data.at[self.selected_idx, 'Rel_Time']
             self.file_data[path][key] = t
             self.update_plots()
+            self.update_table_view()
+
+    def _update_event_col(self):
+        """Dynamically generates the 4-bit Event column using pure Pandas index alignment."""
+        if self.raw_data is None or self.raw_data.empty: return
+        path = self.get_current_filepath()
+        d = self.file_data[path]
+        
+        self.raw_data['Event'] = '0000' # Initialize all rows as 0000 (stim/freeze_start/freeze_end/shelter)
+
+        def set_event_bit(time_val, bit_index):
+            if time_val is not None:
+                # Find the exact row index closest to the event time
+                idx = (self.raw_data['Rel_Time'] - time_val).abs().idxmin()
+                # Convert string to list, flip the bit, and save back
+                current_event = list(self.raw_data.at[idx, 'Event'])
+                current_event[bit_index] = '1'
+                self.raw_data.at[idx, 'Event'] = "".join(current_event)
+
+        # Assign the 4 bits
+        set_event_bit(0.0, 0)                  # Bit 1: Stim Start
+        set_event_bit(d.get('freeze_start'), 1)    # Bit 2: Freeze Start
+        set_event_bit(d.get('freeze_end'), 2)      # Bit 3: Freeze End
+        set_event_bit(d.get('shelter_time'), 3)    # Bit 4: Shelter Time
+
+    def update_table_view(self):
+        """Refreshes the PandasModel depending on the Clean View checkbox."""
+        if self.raw_data is None: return
+        
+        # Always ensure the Event column is up to date before rendering!
+        self._update_event_col()
+        
+        if self.chk_clean_view.isChecked():
+            # Define desired columns, gracefully ignoring any that might not exist yet
+            desired_cols = ['Trial time', 'Rel_Time', 'X_cm', 'Y_cm', 'Distance_cm', 'Velocity_cm_s', 'In zone', 'Event']
+            valid_cols = [c for c in desired_cols if c in self.raw_data.columns]
+            display_df = self.raw_data[valid_cols]
+        else:
+            # Show everything except messy temporary OpenCV variables
+            display_df = self.raw_data.drop(columns=['Raw_Velocity_cm_s'], errors='ignore')
+            
+        self.table_view.setModel(PandasModel(display_df))
+
 
     def update_plots(self):
         """Redraws both Velocity and Trace plots based on selected window."""
@@ -806,8 +1008,8 @@ class LoomingAnalyzer(QMainWindow):
         self.ax.clear()
         self.ax.set_title(f"Velocity Profile | {d['mouse_id']} |{d['photostim']}")
         
-        if 'Velocity' in visible_df.columns:
-            self.ax.plot(visible_df['Rel_Time'], visible_df['Velocity'], color='#1976d2', label='Velocity')
+        if 'Velocity_cm_s' in visible_df.columns:
+                    self.ax.plot(visible_df['Rel_Time'], visible_df['Velocity_cm_s'], color='#1976d2', label='Velocity')
             
         self.ax.axvline(0, color='black', linestyle='--', label="Looming")
         self.ax.set_xlim(pre, post) # Keep stable timeline bounds
@@ -832,7 +1034,7 @@ class LoomingAnalyzer(QMainWindow):
         # Calculate Metrics for UI
         dur = f"{fe - fs:.2f} s" if (fs is not None and fe is not None) else "--"
         dist_v = "--"
-        dist_col = 'Distance'
+        dist_col = 'Distance_cm'
         if fe is not None and st is not None and dist_col in visible_df.columns:
             sum_dist = visible_df[(visible_df['Rel_Time']>fe) & (visible_df['Rel_Time']<=st)][dist_col].sum()
             dist_v = f"{sum_dist:.2f} cm"
@@ -1263,21 +1465,21 @@ class LoomingAnalyzer(QMainWindow):
         # 2. Save Full Coordinates DataFrame
         if self.raw_data is not None:
             export_df = self.raw_data.copy()
-            export_df['Event'] = '0000' # Initialize all rows as 0000 (stim/freeze_start/freeze_end/shelter)
-            def set_event_bit(time_val, bit_index):
-                if time_val is not None:
-                    # Find the exact row index closest to the event time
-                    idx = (export_df['Rel_Time'] - time_val).abs().idxmin()
-                    # Convert string to list, flip the bit, and save back
-                    current_event = list(export_df.at[idx, 'Event'])
-                    current_event[bit_index] = '1'
-                    export_df.at[idx, 'Event'] = "".join(current_event)
+            # export_df['Event'] = '0000' # Initialize all rows as 0000 (stim/freeze_start/freeze_end/shelter)
+            # def set_event_bit(time_val, bit_index):
+            #     if time_val is not None:
+            #         # Find the exact row index closest to the event time
+            #         idx = (export_df['Rel_Time'] - time_val).abs().idxmin()
+            #         # Convert string to list, flip the bit, and save back
+            #         current_event = list(export_df.at[idx, 'Event'])
+            #         current_event[bit_index] = '1'
+            #         export_df.at[idx, 'Event'] = "".join(current_event)
             
-            # Assign the 4 bits
-            set_event_bit(0.0, 0)                  # Bit 1: Stim Start (Rel_Time is exactly 0)
-            set_event_bit(d['freeze_start'], 1)    # Bit 2: Freeze Start
-            set_event_bit(d['freeze_end'], 2)      # Bit 3: Freeze End
-            set_event_bit(d['shelter_time'], 3)    # Bit 4: Shelter Time
+            # # Assign the 4 bits
+            # set_event_bit(0.0, 0)                  # Bit 1: Stim Start (Rel_Time is exactly 0)
+            # set_event_bit(d['freeze_start'], 1)    # Bit 2: Freeze Start
+            # set_event_bit(d['freeze_end'], 2)      # Bit 3: Freeze End
+            # set_event_bit(d['shelter_time'], 3)    # Bit 4: Shelter Time
 
             export_df.to_csv(os.path.join(self.output_dir, f"{bn}_PlotData_{ts}.csv"), index=False)
             
@@ -1289,13 +1491,13 @@ class LoomingAnalyzer(QMainWindow):
         if df is not None:
             # Max speed AFTER looming starts
             post_df = df[df['Rel_Time'] >= 0]
-            if 'Velocity' in df.columns and not post_df.empty:
-                max_speed = post_df['Velocity'].max()
+            if 'Velocity_cm_s' in df.columns and not post_df.empty:
+                max_speed = post_df['Velocity_cm_s'].max()
                 
             # Distance traveled from end of freeze -> shelter
             fe, st = d['freeze_end'], d['shelter_time']
-            if fe is not None and st is not None and 'Distance' in df.columns:
-                dist_to_shelter = df[(df['Rel_Time'] > fe) & (df['Rel_Time'] <= st)]['Distance'].sum()
+            if fe is not None and st is not None and 'Distance_cm' in df.columns:
+                dist_to_shelter = df[(df['Rel_Time'] > fe) & (df['Rel_Time'] <= st)]['Distance_cm'].sum()
 
         # 4. Compile Row for the Master Results CSV
         # FIXED: Explicit 'is not None' checks so that 0.0s is evaluated correctly!
