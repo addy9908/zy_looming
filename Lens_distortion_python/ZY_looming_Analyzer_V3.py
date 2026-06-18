@@ -209,7 +209,7 @@ class LoomingAnalyzer(QMainWindow):
         left_layout.addWidget(grp_params)
 
         # 3. DLC specific Settings
-        grp_dlc = QGroupBox("3. DeepLabCut Settings")
+        self.grp_dlc = QGroupBox("3. DeepLabCut Settings")
         dlc_form = QFormLayout()
         
         self.txt_fps = QLineEdit("30.0")
@@ -259,8 +259,8 @@ class LoomingAnalyzer(QMainWindow):
         dlc_lay.addLayout(dlc_form)
         dlc_lay.addLayout(calib_lay1)
         dlc_lay.addLayout(calib_lay2)
-        grp_dlc.setLayout(dlc_lay)
-        left_layout.addWidget(grp_dlc)
+        self.grp_dlc.setLayout(dlc_lay)
+        left_layout.addWidget(self.grp_dlc)
 
         # 4. Exports
         grp_export = QGroupBox("4. Export Tools")
@@ -383,19 +383,23 @@ class LoomingAnalyzer(QMainWindow):
         ann_plot_lay.addLayout(ann_col, stretch=1)
         
         top_right_layout.addLayout(ann_plot_lay)
+        right_splitter.addWidget(top_right_widget)
         
         # Table
+        mid_right_widget = QWidget()
+        mid_right_layout = QVBoxLayout(mid_right_widget)
+        
         self.chk_clean_view = QCheckBox("Clean Table View (Hide raw coords & metadata)")
         self.chk_clean_view.setChecked(True) # On by default!
         self.chk_clean_view.stateChanged.connect(self.update_table_view)
-        top_right_layout.addWidget(self.chk_clean_view)
+        mid_right_layout.addWidget(self.chk_clean_view)
         
         self.table_view = QTableView()
         self.table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_view.clicked.connect(self.on_table_clicked)
-        top_right_layout.addWidget(self.table_view)
+        mid_right_layout.addWidget(self.table_view)
         
-        right_splitter.addWidget(top_right_widget)
+        right_splitter.addWidget(mid_right_widget)
         
         # Bottom Velocity Plot
         plot_widget = QWidget()
@@ -418,7 +422,7 @@ class LoomingAnalyzer(QMainWindow):
         plot_layout.addWidget(self.canvas)
         right_splitter.addWidget(plot_widget)
         
-        right_splitter.setSizes([500, 400])
+        right_splitter.setSizes([400, 250, 400])
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_splitter)
 
@@ -487,13 +491,16 @@ class LoomingAnalyzer(QMainWindow):
             
             # Route to parser
             if d['type'] == 'dlc':
+                self.grp_dlc.setEnabled(True)
                 self.btn_calib.setEnabled(True)
                 df = self.parse_dlc(filepath, d)
             elif d['type'] == 'ethovision':
-                self.btn_calib.setEnabled(False)
+                self.grp_dlc.setEnabled(False)
+                # self.btn_calib.setEnabled(False)
                 df = self.parse_ethovision(filepath, d)
             elif d['type'] == 'saved_analysis':
-                self.btn_calib.setEnabled(False)
+                self.grp_dlc.setEnabled(False)
+                # self.btn_calib.setEnabled(False)
                 df = self. parse_saved_analysis(filepath,d)
             else:
                 self.statusBar().showMessage("check the file type", 3000)
@@ -586,10 +593,14 @@ class LoomingAnalyzer(QMainWindow):
 
     def parse_dlc(self, filepath, meta):
         """
-        Parses DLC H5 tracking files.
+        Parses DLC H5 tracking files (only has frame number =len(df_h5) but not timestamp.
         Cleans low-likelihood points, converts pixels to physical CM, 
         and flips the Y-axis so (0,0) is firmly at the bottom-left of the chamber.
         """
+        self.txt_px_cm.setEnabled(True)
+        self.txt_vid_w.setEnabled(True)
+        self.txt_vid_h.setEnabled(True)
+        
         df_h5 = pd.read_hdf(filepath)
         df_h5.replace([-1, -1.0], np.nan, inplace=True)
         
@@ -696,6 +707,16 @@ class LoomingAnalyzer(QMainWindow):
             target_h_px = cp['chamber_dims'][1]
             px_cm = target_w_px / float(self.txt_chamber_w.text())
             
+            self.txt_px_cm.setText(f"{px_cm:.2f}")
+            self.txt_px_cm.setEnabled(False)
+            
+            self.txt_vid_w.setText(f"{cp['frame_dims'][0]}")
+            self.txt_vid_w.setEnabled(False)
+            
+            self.txt_vid_h.setText(f"{cp['frame_dims'][1]}")
+            self.txt_vid_h.setEnabled(False)
+            
+            
             x_margin = (w - target_w_px) / 2.0
             y_margin = (cp['frame_dims'][1] - target_h_px) / 2.0
             
@@ -737,6 +758,7 @@ class LoomingAnalyzer(QMainWindow):
     # ==========================================    
     def parse_ethovision(self, filepath, meta):
         """Parses Ethovision files and auto-normalizes them to a (0,0) bottom-left origin."""
+        self.txt_fps.setEnabled(True)
         if filepath.endswith('.xlsx'):
             temp_df = pd.read_excel(filepath, nrows=50, header=None)
             idx_row = temp_df[temp_df.eq("Trial time").any(axis=1)].index[0]
@@ -797,6 +819,9 @@ class LoomingAnalyzer(QMainWindow):
             # Dynamically calculate FPS from the Trial time timestamps
             try: 
                 fps = 1.0 / df['Trial time'].diff().median()
+                self.txt_fps.setText(f"{fps:.2f}")
+                self.txt_fps.setEnabled(False)
+                
             except: 
                 try: fps = float(self.txt_fps.text())
                 except: fps = 30.0
@@ -853,7 +878,7 @@ class LoomingAnalyzer(QMainWindow):
         
         # --- THE FIX: If the scale/fps inputs changed on a DLC file, re-trigger the parsing math! ---
         if d['type'] == 'dlc':
-            dlc_parameters = [self.txt_px_cm, self.txt_fps, self.txt_likelihood, self.txt_vid_h, self.txt_vid_w, self.minimal_movement, self.combo_bp.model(), self.txt_x_offset, self.txt_calib_y_offset]
+            dlc_parameters = [self.txt_chamber_w, self.txt_chamber_h,self.txt_px_cm, self.txt_fps, self.txt_likelihood, self.txt_vid_h, self.txt_vid_w, self.minimal_movement, self.combo_bp.model(), self.txt_x_offset, self.txt_calib_y_offset, self.txt_shelter_h]
             if self.sender() in dlc_parameters:
                 self.raw_data = self.parse_dlc(path, d)
         elif d['type'] == 'ethovision':
@@ -1088,9 +1113,32 @@ class LoomingAnalyzer(QMainWindow):
         d = self.file_data[path]
         
         pre = float(self.txt_pre_stim.text())
-        post = d['post_stim']
+        post = float(self.txt_post_stim.text())
         full_df = self.raw_data[(self.raw_data['Rel_Time'] >= pre) & (self.raw_data['Rel_Time'] <= post)].copy()
-        if full_df.empty: return
+        if full_df.empty:             
+            self.ax.clear()
+            self.ax.text(0.5, 0.5, "No data available", 
+                    horizontalalignment='center', 
+                    verticalalignment='center', 
+                    transform=self.ax.transAxes, 
+                    fontsize=14, 
+                    color='gray', 
+                    weight='bold')
+            
+            self.canvas.draw()
+            
+            self.trace_ax.clear()
+            self.trace_ax.text(0.5, 0.5, "No data available", 
+                          horizontalalignment='center', 
+                          verticalalignment='center', 
+                          transform=self.trace_ax.transAxes, 
+                          fontsize=14, 
+                          color='gray', 
+                          weight='bold')
+            
+            self.trace_canvas.draw()
+                       
+            return
 
         # Reset markers because ax.clear() will destroy them
         self.vel_marker = None
